@@ -206,37 +206,18 @@ void ssh_loop(void *pvParameters) {
             unsigned long currentMillis = millis();
             if (currentMillis - lastKeyPressMillis >= debounceDelay) {
                 lastKeyPressMillis = currentMillis;
-                for (auto i : key.word) {
-                    commandBuffer += i;
-                    tft.print(i);
-                    cursorY = tft.getCursorY();
+
+                // Build message to send to SSH server
+                String message = "";
+                for (auto i : key.word) { message += i; }
+
+                // Send the key to SSH server - let server handle echo
+                if (message.length() > 0) {
+                    ssh_channel_write(channel_ssh, message.c_str(), message.length());
                 }
-                if (key.del && commandBuffer.length() > 2) {
-                    commandBuffer.remove(commandBuffer.length() - 1);
-                    tft.setCursor(tft.getCursorX() - 6, tft.getCursorY());
-                    tft.setTextColor(TFT_GREEN, bruceConfig.bgColor);
-                    tft.print(" ");
-                    tft.setCursor(tft.getCursorX() - 6, tft.getCursorY());
-                    cursorY = tft.getCursorY();
-                } else if (key.enter) {
-                    tft.setTextColor(TFT_GREEN);
-                    commandBuffer.trim();
-                    if (commandBuffer.substring(2) == "cls") {
-                        tft.fillScreen(bruceConfig.bgColor);
-                        tft.setCursor(0, 0);
-                        tft.print("> ");
-                        commandBuffer = "> ";
-                    } else {
-                        String message =
-                            commandBuffer.substring(2) + "\r"; // Get the command part, exclude the "> "
-                        ssh_channel_write(channel_ssh, message.c_str(), message.length()); // Send the command
-                    }
-                    cursorY = tft.getCursorY(); // Update cursor position
-                    if (cursorY > tftHeight) {
-                        tft.setCursor(0, tftHeight - 10);
-                        tft.fillRect(0, tftHeight - 11, tftWidth, 11, bruceConfig.bgColor);
-                    }
-                }
+
+                // The server will echo back the response, which we'll display
+                // No local echo needed for SSH terminal
             }
         }
 
@@ -268,17 +249,98 @@ void ssh_loop(void *pvParameters) {
 
         if (nbytes > 0) {
             String msg = "";
-            tft.setTextColor(TFT_WHITE);
+            static bool inEscape = false;
+            static String escapeSeq = "";
+
             for (int i = 0; i < nbytes; ++i) {
-                msg += char(buffer[i]);
-                if (buffer[i] == '\r') continue; // Ignore carriage return
-                tft.write(buffer[i]);
-                if (tft.getCursorY() > tftHeight) {
+                char c = buffer[i];
+                msg += c;
+
+                // Handle ANSI escape sequences
+                if (filterAnsiSequences) {
+                    if (c == '\x1B') { // ESC character
+                        inEscape = true;
+                        escapeSeq = "\x1B";
+                        continue;
+                    }
+
+                    if (inEscape) {
+                        escapeSeq += c;
+
+                        // Check if sequence is complete
+                        // Most sequences end with a letter or specific characters
+                        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == 'm' || c == 'H' ||
+                            c == 'J' || c == 'K') {
+                            // Process the escape sequence
+                            if (escapeSeq.indexOf("[2J") > 0 || escapeSeq.indexOf("[H") > 0) {
+                                // Clear screen command
+                                tft.fillScreen(bruceConfig.bgColor);
+                                tft.setCursor(0, 0);
+                            } else if (escapeSeq.indexOf("[K") > 0) {
+                                // Clear to end of line
+                                int x = tft.getCursorX();
+                                int y = tft.getCursorY();
+                                tft.fillRect(x, y, tftWidth - x, LH, bruceConfig.bgColor);
+                            } else if (escapeSeq.indexOf("m") > 0) {
+                                // Color codes - parse and set colors
+                                if (escapeSeq.indexOf("[0m") > 0 || escapeSeq.indexOf("[00m") > 0) {
+                                    // Reset to default
+                                    tft.setTextColor(TFT_WHITE, bruceConfig.bgColor);
+                                } else if (escapeSeq.indexOf("[01;32m") > 0 ||
+                                           escapeSeq.indexOf("[1;32m") > 0 || escapeSeq.indexOf("[32m") > 0) {
+                                    // Green
+                                    tft.setTextColor(TFT_GREEN, bruceConfig.bgColor);
+                                } else if (escapeSeq.indexOf("[01;34m") > 0 ||
+                                           escapeSeq.indexOf("[1;34m") > 0 || escapeSeq.indexOf("[34m") > 0) {
+                                    // Blue
+                                    tft.setTextColor(TFT_BLUE, bruceConfig.bgColor);
+                                } else if (escapeSeq.indexOf("[01;31m") > 0 ||
+                                           escapeSeq.indexOf("[1;31m") > 0 || escapeSeq.indexOf("[31m") > 0) {
+                                    // Red
+                                    tft.setTextColor(TFT_RED, bruceConfig.bgColor);
+                                } else if (escapeSeq.indexOf("[01;33m") > 0 ||
+                                           escapeSeq.indexOf("[1;33m") > 0 || escapeSeq.indexOf("[33m") > 0) {
+                                    // Yellow
+                                    tft.setTextColor(TFT_YELLOW, bruceConfig.bgColor);
+                                } else if (escapeSeq.indexOf("[01;36m") > 0 ||
+                                           escapeSeq.indexOf("[1;36m") > 0 || escapeSeq.indexOf("[36m") > 0) {
+                                    // Cyan
+                                    tft.setTextColor(TFT_CYAN, bruceConfig.bgColor);
+                                } else if (escapeSeq.indexOf("[01;35m") > 0 ||
+                                           escapeSeq.indexOf("[1;35m") > 0 || escapeSeq.indexOf("[35m") > 0) {
+                                    // Magenta
+                                    tft.setTextColor(TFT_MAGENTA, bruceConfig.bgColor);
+                                }
+                            }
+                            inEscape = false;
+                            escapeSeq = "";
+                        }
+                        continue;
+                    }
+                }
+
+                // Display printable characters
+                if (c == '\r') continue; // Ignore carriage return
+                if (c == '\n') {
+                    // New line
+                    tft.setCursor(0, tft.getCursorY() + LH);
+                } else if (c == '\b') {
+                    // Backspace
+                    int x = tft.getCursorX();
+                    if (x >= LW) {
+                        tft.setCursor(x - LW, tft.getCursorY());
+                        tft.print(" ");
+                        tft.setCursor(x - LW, tft.getCursorY());
+                    }
+                } else if (c >= 32 && c <= 126) {
+                    // Printable ASCII
+                    tft.write(c);
+                }
+
+                // Handle screen scrolling
+                if (tft.getCursorY() > tftHeight - LH) {
                     tft.fillScreen(bruceConfig.bgColor);
                     tft.setCursor(0, 0);
-                    tft.setTextColor(TFT_GREEN);
-                    tft.print(commandBuffer); // Move to the next line on display
-                    tft.setTextColor(TFT_WHITE);
                 }
                 cursorY = tft.getCursorY();
             }
@@ -290,7 +352,6 @@ void ssh_loop(void *pvParameters) {
                 tft.fillRect(0, tftHeight - 11, tftWidth, 11, bruceConfig.bgColor);
             }
             commandBuffer = "> "; // Reset command buffer
-            tft.setTextColor(TFT_GREEN);
         }
 
         // Handle channel closure and other conditions
