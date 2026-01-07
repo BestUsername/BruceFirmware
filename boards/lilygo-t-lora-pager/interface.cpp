@@ -311,6 +311,7 @@ void InputHandler(void) {
     static unsigned long tm = millis();
     static int posDifference = 0;
     static int lastPos = 0;
+    static int _last_dir = 0;
     bool sel = !BTN_ACT;
     bool esc = !BTN_ACT;
 
@@ -321,12 +322,57 @@ void InputHandler(void) {
 
     int newPos = encoder->getPosition();
     if (newPos != lastPos) {
-        posDifference += (newPos - lastPos);
+        int diff = newPos - lastPos;
+        posDifference += diff;
+        _last_dir = (diff < 0) ? -1 : (diff > 0) ? 1 : 0;
         lastPos = newPos;
     }
 
     sel = digitalRead(SEL_BTN);
     esc = digitalRead(BK_BTN);
+
+    // Handle encoder rotation as arrow keys for SSH/terminal
+    if (_last_dir != 0 && !wakeUpScreen()) {
+        KeyStroke.Clear();
+        if (_last_dir < 0) {
+            // Scroll up - send Up Arrow escape sequence
+            KeyStroke.word.push_back('\x1B');
+            KeyStroke.word.push_back('[');
+            KeyStroke.word.push_back('A');
+            KeyStroke.hid_keys.push_back('\x1B');
+            KeyStroke.hid_keys.push_back('[');
+            KeyStroke.hid_keys.push_back('A');
+        } else {
+            // Scroll down - send Down Arrow escape sequence
+            KeyStroke.word.push_back('\x1B');
+            KeyStroke.word.push_back('[');
+            KeyStroke.word.push_back('B');
+            KeyStroke.hid_keys.push_back('\x1B');
+            KeyStroke.hid_keys.push_back('[');
+            KeyStroke.hid_keys.push_back('B');
+        }
+        KeyStroke.pressed = true;
+
+        // Haptic feedback
+        drv.setWaveform(0, 1);
+        drv.setWaveform(1, 0);
+        drv.run();
+    }
+
+    // Handle encoder button as Enter
+    if (sel == BTN_ACT && !wakeUpScreen()) {
+        KeyStroke.Clear();
+        KeyStroke.hid_keys.push_back(KEY_ENTER);
+        KeyStroke.word.push_back(KEY_ENTER);
+        KeyStroke.enter = true;
+        KeyStroke.pressed = true;
+        SelPress = true;
+
+        // Haptic feedback
+        drv.setWaveform(0, 1);
+        drv.setWaveform(1, 0);
+        drv.run();
+    }
 
     if (keyboard->available() > 0) {
         int keyValue = keyboard->getEvent();
@@ -357,7 +403,10 @@ void InputHandler(void) {
             drv.setWaveform(1, 0);
             drv.run();
         }
-    } else KeyStroke.Clear();
+    } else if (_last_dir == 0 && sel != BTN_ACT) {
+        // Only clear KeyStroke if encoder wasn't used
+        KeyStroke.Clear();
+    }
 
     if (posDifference != 0 || sel == BTN_ACT || esc == BTN_ACT || KeyStroke.enter) {
         if (!wakeUpScreen()) {
@@ -376,6 +425,10 @@ void InputHandler(void) {
                 NextPress = true;
                 posDifference--;
             }
+
+            if (_last_dir < 0) PrevPress = true;
+            if (_last_dir > 0) NextPress = true;
+
             if (sel == BTN_ACT) SelPress = true;
             if (esc == BTN_ACT) EscPress = true;
         } else goto END;
